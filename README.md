@@ -1,4 +1,4 @@
-# Web2API（CDP Demo）
+# Web2API
 
 一个基于 **FastAPI + Playwright + CDP** 的“Web2API”服务：通过**真实浏览器会话**访问站点，并以 **OpenAI 兼容**的接口形式对外提供 `/{type}/v1/chat/completions` 能力（按 `type` 插件化路由，例如 `claude`）。
 
