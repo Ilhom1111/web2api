@@ -4,11 +4,14 @@
 """
 
 import asyncio
+import json
 import logging
 from collections.abc import Callable
 from typing import Any, AsyncIterator
 
 from playwright.async_api import BrowserContext, Page
+
+from core.plugin.errors import AccountFrozenError
 
 ParseSseEvent = Callable[[str], tuple[list[str], str | None, str | None]]
 
@@ -44,6 +47,9 @@ async ({ url, body, bindingName }) => {
       await send(done);
       return;
     }
+    const headersObj = {};
+    resp.headers.forEach((v, k) => { headersObj[k] = v; });
+    await send("__headers__:" + JSON.stringify(headersObj));
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     while (true) {
@@ -160,7 +166,8 @@ async def stream_raw_via_page_fetch(
     request_id: str,
     chat_page_url: str | None = None,
     *,
-    on_http_error: Callable[[str], None] | None = None,
+    on_http_error: Callable[[str, dict[str, str] | None], int | None] | None = None,
+    on_headers: Callable[[dict[str, str]], None] | None = None,
     fetch_timeout: int = 90,
     read_timeout: float = 130.0,
 ) -> AsyncIterator[str]:
@@ -168,7 +175,7 @@ async def stream_raw_via_page_fetch(
     在浏览器内对 url 发起 POST body，流式回传原始字符串块（含 SSE 等）。
     同一 page 多请求用 request_id 区分 binding，互不串数据。
     通过 CDP Runtime.addBinding 注入 sendChunk_<request_id>，用 Runtime.bindingCalled 接收。
-    收到 __error__: 时调用 on_http_error(msg)；收到 __done__ 结束。
+    收到 __headers__: 时解析 JSON 并调用 on_headers(headers)；收到 __error__: 时调用 on_http_error(msg)；收到 __done__ 结束。
     """
     chunk_queue: asyncio.Queue[str] = asyncio.Queue()
     BINDING_NAME = "sendChunk_" + request_id
@@ -201,6 +208,7 @@ async def stream_raw_via_page_fetch(
 
         fetch_task = asyncio.create_task(run_fetch())
         try:
+            headers = None
             while True:
                 try:
                     chunk = await asyncio.wait_for(
@@ -211,11 +219,21 @@ async def stream_raw_via_page_fetch(
                     break
                 if chunk == "__done__":
                     break
+                if chunk.startswith("__headers__:"):
+                    try:
+                        headers = json.loads(chunk[12:])
+                        if on_headers and isinstance(headers, dict):
+                            on_headers({k: str(v) for k, v in headers.items()})
+                    except (json.JSONDecodeError, TypeError) as e:
+                        logger.debug("[fetch] 解析 __headers__ 失败: %s", e)
+                    continue
                 if chunk.startswith("__error__:"):
                     msg = chunk[10:].strip()
                     logger.warning("[fetch] __error__ from page: %s", msg)
                     if on_http_error:
-                        on_http_error(msg)
+                        unfreeze_at = on_http_error(msg, headers)
+                        if isinstance(unfreeze_at, int):
+                            raise AccountFrozenError(msg, unfreeze_at)
                     else:
                         raise RuntimeError(msg)
                     continue
@@ -266,7 +284,7 @@ async def stream_completion_via_sse(
     request_id: str,
     *,
     chat_page_url: str | None = None,
-    on_http_error: Callable[[str], None] | None = None,
+    on_http_error: Callable,
     collect_message_id: list[str] | None = None,
 ) -> AsyncIterator[str]:
     """

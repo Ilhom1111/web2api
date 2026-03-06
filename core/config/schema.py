@@ -1,5 +1,5 @@
 """
-v2 配置数据模型：按代理 IP（指纹）分组，账号含 name / type / auth(JSON)。
+配置数据模型：按代理 IP（指纹）分组，账号含 name / type / auth(JSON)。
 不设 profile_id，user-data-dir 按指纹等由运行时拼接。
 """
 
@@ -14,11 +14,14 @@ class AccountConfig:
     name: str
     type: str  # 如 claude, chatgpt, kimi
     auth: dict[str, Any]  # 由各插件定义 key，如 claude 用 sessionKey
-    unfreeze_at: int | None = None  # Unix 时间戳，接口返回的解冻时间；None 或已过则视为可用
+    unfreeze_at: int | None = (
+        None  # Unix 时间戳，接口返回的解冻时间；None 或已过则视为可用
+    )
 
     def auth_json(self) -> str:
         """序列化为 JSON 字符串供 DB 存储。"""
         import json
+
         return json.dumps(self.auth, ensure_ascii=False)
 
     def is_available(self) -> bool:
@@ -26,6 +29,7 @@ class AccountConfig:
         if self.unfreeze_at is None:
             return True
         import time
+
         return time.time() >= self.unfreeze_at
 
 
@@ -53,6 +57,7 @@ def account_from_row(
 ) -> AccountConfig:
     """从 DB 行构造 AccountConfig。"""
     import json
+
     try:
         auth = json.loads(auth_json) if auth_json else {}
     except Exception:

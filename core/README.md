@@ -1,10 +1,10 @@
-# Web2API v2 架构说明
+# Web2API 架构说明
 
 新架构在**新文件**中实现，不修改现有 `config_db`、`web2api`、`multi_web2api` 等。
 
 ## 目录结构
 
-- **config**：v2 数据模型（`ProxyGroupConfig`、`AccountConfig`，含 `name`/`type`/`auth` JSON）与持久化（独立 DB `account_pool_v2.sqlite3`）。
+- **config**：数据模型（`ProxyGroupConfig`、`AccountConfig`，含 `name`/`type`/`auth` JSON）与持久化（独立 DB `account_pool.sqlite3`）。
 - **account**：`AccountPool`，按 type 轮询 `acquire(type)`。
 - **runtime**：`ProxyKey`、`SessionCache`（session_id → 定位 page/context）、`BrowserManager`（进程与 CDP、按 type 缓存 page）。
 - **plugin**：`AbstractPlugin`、`PluginRegistry`、`ClaudePlugin`（ensure_page / apply_auth / create_conversation / stream_completion）。
@@ -13,7 +13,7 @@
 ## 启动
 
 ```bash
-uv run python main_v2.py
+uv run python main.py
 ```
 
 服务监听 `http://127.0.0.1:8001`。baseUrl 为 `http://ip:port/{type}`，例如：
@@ -21,16 +21,16 @@ uv run python main_v2.py
 - `GET  http://127.0.0.1:8001/claude/v1/models`
 - `POST http://127.0.0.1:8001/claude/v1/chat/completions`
 
-## 配置（v2 数据库）
+## 配置（数据库）
 
-使用独立 SQLite：`account_pool_v2.sqlite3`。
+使用独立 SQLite：`account_pool.sqlite3`。
 
-- **proxy_group_v2**：proxy_host, proxy_user, proxy_pass, fingerprint_id, timezone。
-- **account_v2**：proxy_group_id, name, type, auth（JSON）。Claude 插件要求 auth 含 `sessionKey` 或 `session_key`。
+- **proxy_group**：proxy_host, proxy_user, proxy_pass, fingerprint_id, timezone。
+- **account**：proxy_group_id, name, type, auth（JSON）。Claude 插件要求 auth 含 `sessionKey` 或 `session_key`。
 
-**配置页**：启动服务后访问 **http://127.0.0.1:8001/config/v2**，可添加/编辑代理组与账号（name、type、auth JSON），保存后立即生效。
+**配置页**：启动服务后访问 **http://127.0.0.1:8001/config/**，可添加/编辑代理组与账号（name、type、auth JSON），保存后立即生效。
 
-**API**：`GET /api/v2/config` 获取配置，`PUT /api/v2/config` 更新配置（请求体为与 GET 相同的 JSON 数组）。
+**API**：`GET /api/config` 获取配置，`PUT /api/config` 更新配置（请求体为与 GET 相同的 JSON 数组）。
 
 也可用代码初始化示例数据：
 
@@ -62,8 +62,8 @@ repo.save_groups([
 
 1. 实现 `core.plugin.base.AbstractPlugin`（ensure_page、apply_auth、create_conversation、stream_completion）。
 2. 在应用启动前 `PluginRegistry.register(YourPlugin())`。
-3. 在 account_v2 中为该 type 添加账号，请求时使用 `/{your_type}/v1/chat/completions`。
+3. 在 account 中为该 type 添加账号，请求时使用 `/{your_type}/v1/chat/completions`。
 
 ## 常量
 
-- CDP 端口 v2 使用 **9223**（与现有 9222 错开）。见 `core.constants`。
+- CDP 端口使用 **9223**（与现有 9222 错开）。见 `core.constants`。

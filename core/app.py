@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     groups = repo.load_groups()
 
     if not groups:
-        logger.warning("v2 数据库无配置，请先在 /config/v2 配置页添加或通过 API 写入")
+        logger.warning("数据库无配置，请先在 /config 配置页添加或通过 API 写入")
         app.state.chat_handler = None
         app.state.session_cache = SessionCache()
         app.state.browser_manager = BrowserManager()
@@ -98,7 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_cache = session_cache
     app.state.browser_manager = browser_manager
     app.state.config_repo = repo
-    logger.info("v2 服务已就绪，已注册 type: %s", ", ".join(PluginRegistry.all_types()))
+    logger.info("服务已就绪，已注册 type: %s", ", ".join(PluginRegistry.all_types()))
     yield
     # shutdown: 可在此关闭 browser_manager 中浏览器（当前为按需连接，不常驻）
     app.state.chat_handler = None
@@ -106,7 +106,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(
-        title="Web2API v2 (Plugin)",
+        title="Web2API(Plugin)",
         description="按 type 路由的 OpenAI 兼容接口，baseUrl: http://ip:port/{type}/v1/...",
         lifespan=lifespan,
     )

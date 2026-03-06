@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>v2 账号池配置</title>
+    <title>账号池配置</title>
     <style>
       :root {
         --bg: #0f0f12;
@@ -245,7 +245,7 @@
     </style>
   </head>
   <body>
-    <h1>v2 账号池配置</h1>
+    <h1>账号池配置</h1>
     <div id="msg"></div>
     <div class="toolbar">
       <button type="button" class="btn btn-primary" id="addGroup">添加代理组</button>
@@ -260,8 +260,8 @@
     <div id="list"></div>
 
     <script>
-      const API = '/api/v2/config'
-      const TYPES_API = '/api/v2/types'
+      const API = '/api/config'
+      const TYPES_API = '/api/types'
       let registeredTypes = ['claude']
 
       async function loadTypes() {

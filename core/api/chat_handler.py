@@ -15,8 +15,7 @@ from core.runtime.browser_manager import BrowserManager
 from core.runtime.keys import ProxyKey
 from core.runtime.session_cache import SessionCache
 
-from core.api.conv_parser import parse_conv_uuid_from_messages, session_id_prefix
-from core.api.function_call import format_tools_for_prompt
+from core.api.conv_parser import parse_conv_uuid_from_messages, session_id_suffix
 from core.api.react import format_react_prompt
 from core.api.schemas import OpenAIChatRequest, extract_user_content
 
@@ -74,26 +73,26 @@ class ChatHandler:
         req: OpenAIChatRequest,
     ) -> AsyncIterator[str]:
         """
-        流式返回助手回复；首块为零宽编码的会话 ID，随后为正文。
+        流式返回助手回复；正文在前，会话 ID 的零宽编码附加在末尾。
         """
         plugin = PluginRegistry.get(type_name)
         if plugin is None:
             raise ValueError(f"未注册的 type: {type_name}")
 
-        tools_text = format_tools_for_prompt(req.tools or [])
-        use_react = bool(req.tools)
-        react_prompt_prefix = format_react_prompt(req.tools or []) if use_react else ""
+        has_tools = bool(req.tools)
+        react_prompt_prefix = format_react_prompt(req.tools or []) if has_tools else ""
         content = extract_user_content(
             req.messages,
-            tools_text=tools_text,
-            use_react=use_react,
+            has_tools=has_tools,
             react_prompt_prefix=react_prompt_prefix,
         )
         if not content.strip():
             raise ValueError("messages 中需至少有一条带 content 的 user 消息")
 
         debug_path = (
-            Path(__file__).resolve().parent.parent.parent / "chat_promt_debug.json"
+            Path(__file__).resolve().parent.parent.parent
+            / "debug"
+            / "chat_prompt_debug.json"
         )
         debug_path.write_text(
             json.dumps({"prompt": content}, ensure_ascii=False, indent=2),
@@ -102,14 +101,11 @@ class ChatHandler:
 
         raw_messages = _request_messages_as_dicts(req)
         conv_uuid = parse_conv_uuid_from_messages(raw_messages)
-        if plugin.parse_session_id(raw_messages) is not None:
-            conv_uuid = plugin.parse_session_id(raw_messages) or conv_uuid
-        logger.info(
-            "[chat] type=%s parsed conv_uuid=%s from_messages=%s",
-            type_name,
-            conv_uuid,
-            "yes" if conv_uuid else "no",
-        )
+
+        if conv_uuid is None:
+            conv_uuid = plugin.parse_session_id(raw_messages)
+
+        logger.info("[chat] type=%s parsed conv_uuid=%s", type_name, conv_uuid)
 
         max_retries = 3
         skip_session_cache = False
@@ -237,7 +233,6 @@ class ChatHandler:
                     session_id,
                     len(content),
                 )
-                yield session_id_prefix(session_id)
                 stream = cast(
                     AsyncIterator[str],
                     plugin.stream_completion(
@@ -246,6 +241,8 @@ class ChatHandler:
                 )
                 async for chunk in stream:
                     yield chunk
+                # 在助手完整回复之后，把会话 ID 的零宽编码附加在末尾
+                yield session_id_suffix(session_id)
                 return
             except AccountFrozenError as e:
                 logger.warning(
@@ -273,13 +270,3 @@ class ChatHandler:
                     await self._browser_manager.release_page_slot(
                         proxy_key, type_name, page
                     )
-
-
-async def stream_completion_http(
-    type_name: str,
-    req: OpenAIChatRequest,
-    handler: ChatHandler,
-) -> AsyncIterator[str]:
-    """供 HTTP 层调用的流式生成器；首块为注释，后续为正文。"""
-    async for chunk in handler.stream_completion(type_name, req):
-        yield chunk

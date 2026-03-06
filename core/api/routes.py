@@ -9,46 +9,26 @@ import logging
 import re
 import time
 import uuid as uuid_mod
-from collections.abc import AsyncIterator, Callable
-from pathlib import Path
-from typing import Any, cast
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from core.api.chat_handler import ChatHandler
-from core.api.function_call import (
-    build_claude_text_sse_events,
-    build_claude_tool_use_sse_events,
-    build_tool_calls_response,
-)
-from core.api.conv_parser import strip_session_id_prefix
+from core.plugin.base import PluginRegistry
+from core.api.function_call import build_tool_calls_response
+from core.api.conv_parser import extract_session_id_marker, strip_session_id_suffix
 from core.api.react import (
-    detect_react_mode,
+    format_react_final_answer_content,
     format_react_prompt,
     parse_react_output,
     react_output_to_tool_calls,
 )
+from core.api.react_stream_parser import ReactStreamParser
 from core.api.schemas import OpenAIChatRequest, extract_user_content
 
 logger = logging.getLogger(__name__)
-
-OPENAI_MODEL_ID = "claude-sonnet-4-5-20250929"
-CHAT_REQUEST_DEBUG = (
-    Path(__file__).resolve().parent.parent.parent / "chat_request_debug.json"
-)
-CHAT_RESPONSE_DEBUG = (
-    Path(__file__).resolve().parent.parent.parent / "chat_response_debug.json"
-)
-
-
-def _save_response_debug(data: dict | list) -> None:
-    try:
-        with open(CHAT_RESPONSE_DEBUG, "a", encoding="utf-8") as f:
-            f.write("\n========\n")
-            f.write(json.dumps(data, ensure_ascii=False, indent=2))
-    except OSError as e:
-        logger.debug("追加 chat_response_debug 失败: %s", e)
 
 
 def get_chat_handler(request: Request) -> ChatHandler:
@@ -65,15 +45,32 @@ def create_router() -> APIRouter:
 
     @router.get("/{type}/v1/models")
     def list_models(type: str) -> dict[str, Any]:
+        plugin = PluginRegistry.get(type)
+        try:
+            mapping = plugin.model_mapping() if plugin is not None else None
+        except Exception:
+            mapping = None
+
+        # 优先使用插件暴露的 OpenAI 兼容模型名（mapping 的 key）
+        model_ids: list[str]
+        if isinstance(mapping, dict) and mapping:
+            model_ids = list(mapping.keys())
+        else:
+            raise HTTPException(
+                status_code=500, detail="model_mapping is not implemented"
+            )
+
+        now = int(time.time())
         return {
             "object": "list",
             "data": [
                 {
-                    "id": OPENAI_MODEL_ID,
+                    "id": mid,
                     "object": "model",
-                    "created": int(time.time()),
+                    "created": now,
                     "owned_by": type,
                 }
+                for mid in model_ids
             ],
         }
 
@@ -88,15 +85,12 @@ def create_router() -> APIRouter:
                 status_code=400,
                 detail="messages 不能为空",
             )
-        from core.api.function_call import format_tools_for_prompt
 
-        tools_text = format_tools_for_prompt(req.tools or [])
-        use_react = bool(req.tools)
-        react_prompt_prefix = format_react_prompt(req.tools or []) if use_react else ""
+        has_tools = bool(req.tools)
+        react_prompt_prefix = format_react_prompt(req.tools or []) if has_tools else ""
         content = extract_user_content(
             req.messages,
-            tools_text=tools_text,
-            use_react=use_react,
+            has_tools=has_tools,
             react_prompt_prefix=react_prompt_prefix,
         )
         if not content.strip():
@@ -105,175 +99,35 @@ def create_router() -> APIRouter:
                 detail="messages 中需至少有一条带 content 的 user 消息",
             )
 
-        try:
-            with open(CHAT_REQUEST_DEBUG, "a", encoding="utf-8") as f:
-                f.write("\n========\n")
-                f.write(json.dumps(req.model_dump(), ensure_ascii=False, indent=2))
-        except OSError as e:
-            logger.debug("追加 chat_request_debug 失败: %s", e)
-
         chat_id = f"chatcmpl-{uuid_mod.uuid4().hex[:24]}"
-        message_id = f"msg_{uuid_mod.uuid4().hex[:24]}"
         created = int(time.time())
-        model = req.model or OPENAI_MODEL_ID
+        model = req.model
 
         if req.stream:
 
             async def sse_stream() -> AsyncIterator[str]:
                 try:
-                    buffer = ""
-                    is_tool_call: bool | None = None
-                    emitted_message_start = False
-                    emitted_content_block_start = False
-                    emitted_tool_calls = False
-                    msg_start, block_start, make_delta_sse, make_stop_sse = (
-                        build_claude_text_sse_events(message_id, model)
+                    parser = ReactStreamParser(
+                        chat_id=chat_id,
+                        model=model,
+                        created=created,
+                        has_tools=has_tools,
                     )
-                    make_delta_sse = cast(Callable[[str], str], make_delta_sse)
-                    make_stop_sse = cast(Callable[[], str], make_stop_sse)
-
                     async for chunk in handler.stream_completion(type, req):
-                        buffer += chunk
-
-                        if use_react and is_tool_call is None:
-                            is_tool_call = detect_react_mode(buffer)
-                        elif not use_react and is_tool_call is None:
-                            is_tool_call = False
-
-                        if is_tool_call is False:
-                            if not emitted_message_start:
-                                emitted_message_start = True
-                                emitted_content_block_start = True
-                                yield msg_start
-                                yield block_start
-                                content_to_send = buffer
-                            else:
-                                content_to_send = chunk
-                            yield make_delta_sse(content_to_send)
-                        # is_tool_call True 或 None：继续缓冲
-
-                    if use_react and (is_tool_call is True or is_tool_call is None):
-                        content_for_parse = strip_session_id_prefix(buffer)
-                        parsed = parse_react_output(content_for_parse)
-                        tool_calls_list = (
-                            react_output_to_tool_calls(parsed) if parsed else []
-                        )
-                        if tool_calls_list and not emitted_tool_calls:
-                            emitted_tool_calls = True
-                            session_id_content = (
-                                buffer[:64] if len(buffer) >= 64 else ""
-                            )
-                            thought = ""
-                            if "Thought" in content_for_parse:
-                                m = re.search(
-                                    r"Thought[:：]\s*(.+?)(?=\s*Action[:：]|$)",
-                                    content_for_parse,
-                                    re.DOTALL | re.I,
-                                )
-                                thought = (m.group(1) or "").strip() if m else ""
-                            text_content = (
-                                f"{session_id_content}\n\n{thought}".strip()
-                                if thought
-                                else session_id_content
-                            )
-                            for sse in build_claude_tool_use_sse_events(
-                                tool_calls_list,
-                                message_id,
-                                model,
-                                text_content=text_content,
-                            ):
-                                yield sse
-                        elif not tool_calls_list and not emitted_message_start:
-                            # 解析后无 tool_calls，将 buffer 按纯文本发出
-                            content_to_emit = strip_session_id_prefix(buffer)
-                            yield msg_start
-                            yield block_start
-                            yield make_delta_sse(content_to_emit)
-                            yield make_stop_sse()
-                            emitted_message_start = True
-
-                    # 流结束后：若已 emit 纯文本 delta，补 message_stop
-                    if (
-                        emitted_message_start
-                        and emitted_content_block_start
-                        and not emitted_tool_calls
-                    ):
-                        yield make_stop_sse()
-
-                    # 流结束后：若从未 emit 任何内容（is_tool_call=None 且无 tool_calls），补齐纯文本
-                    if (
-                        use_react
-                        and not emitted_message_start
-                        and not emitted_tool_calls
-                        and buffer
-                    ):
-                        content_to_emit = strip_session_id_prefix(buffer)
-                        yield msg_start
-                        yield block_start
-                        yield make_delta_sse(content_to_emit)
-                        yield make_stop_sse()
-                    # 保存解析结果（已有 parsed、tool_calls_list）
-                    content_for_save = strip_session_id_prefix(buffer)
-                    parsed_save = parse_react_output(content_for_save)
-                    tc_list = (
-                        react_output_to_tool_calls(parsed_save) if parsed_save else []
-                    )
-                    if tc_list:
-                        thought = ""
-                        if "Thought" in content_for_save:
-                            m = re.search(
-                                r"Thought[:：]\s*(.+?)(?=\s*Action[:：]|$)",
-                                content_for_save,
-                                re.DOTALL | re.I,
-                            )
-                            thought = (m.group(1) or "").strip() if m else ""
-                        content_blocks: list[dict[str, Any]] = []
-                        if thought:
-                            content_blocks.append({"type": "text", "text": thought})
-                        for tc in tc_list:
-                            args = tc.get("arguments", {})
-                            if isinstance(args, str):
-                                try:
-                                    args = json.loads(args) if args else {}
-                                except json.JSONDecodeError:
-                                    args = {}
-                            content_blocks.append(
-                                {
-                                    "type": "tool_use",
-                                    "id": f"toolu_{uuid_mod.uuid4().hex[:16]}",
-                                    "name": tc.get("name", ""),
-                                    "input": args if isinstance(args, dict) else {},
-                                }
-                            )
-                        _save_response_debug(
-                            {
-                                "id": chat_id,
-                                "type": "message",
-                                "role": "assistant",
-                                "content": content_blocks,
-                                "stop_reason": "tool_use",
-                                "model": model,
-                                "usage": {"input_tokens": 0, "output_tokens": 0},
-                            }
-                        )
-                    else:
-                        _save_response_debug(
-                            {
-                                "id": chat_id,
-                                "type": "message",
-                                "role": "assistant",
-                                "content": [{"type": "text", "text": content_for_save}],
-                                "stop_reason": "end_turn",
-                                "model": model,
-                                "usage": {"input_tokens": 0, "output_tokens": 0},
-                            }
-                        )
+                        # 不能 strip_session_id_suffix：会话 ID 用零宽字符附在末尾，必须原样发给客户端，
+                        # 客户端把 assistant 消息存进历史后，下一轮请求会带回来，服务端才能解析出 conv_uuid 复用会话
+                        for sse in parser.feed(chunk):
+                            yield sse
+                    for sse in parser.finish():
+                        yield sse
                 except ValueError as e:
                     logger.warning("chat 请求参数错误: %s", e)
-                    yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'invalid_request_error'}}, ensure_ascii=False)}\n\n"
+                    err_sse = f"data: {json.dumps({'error': {'message': str(e), 'type': 'invalid_request_error'}}, ensure_ascii=False)}\n\n"
+                    yield err_sse
                 except Exception as e:
                     logger.exception("流式 chat 失败")
-                    yield f"data: {json.dumps({'error': {'message': str(e), 'type': 'server_error'}}, ensure_ascii=False)}\n\n"
+                    err_sse = f"data: {json.dumps({'error': {'message': str(e), 'type': 'server_error'}}, ensure_ascii=False)}\n\n"
+                    yield err_sse
 
             return StreamingResponse(
                 sse_stream(),
@@ -296,13 +150,12 @@ def create_router() -> APIRouter:
 
         reply = "".join(full)
         tool_calls_list: list[dict[str, Any]] = []
-        if use_react:
-            content_for_parse = strip_session_id_prefix(reply)
+        if has_tools:
+            content_for_parse = strip_session_id_suffix(reply)
             parsed = parse_react_output(content_for_parse)
             tool_calls_list = react_output_to_tool_calls(parsed) if parsed else []
         if tool_calls_list:
-            # Claude 格式：content 数组 [text, tool_use, ...]
-            session_id_content = reply[:64] if len(reply) >= 64 else ""
+            session_id_content = extract_session_id_marker(reply)
             thought_ns = ""
             if "Thought" in content_for_parse:
                 m = re.search(
@@ -311,8 +164,9 @@ def create_router() -> APIRouter:
                     re.DOTALL | re.I,
                 )
                 thought_ns = (m.group(1) or "").strip() if m else ""
+            # Thought 解析为 thinking：用 <think> 包裹，单换行避免与 tool_calls 间距过大
             text_content = (
-                f"{session_id_content}\n\n{thought_ns}".strip()
+                f"<think>{thought_ns}</think>\n{session_id_content}".strip()
                 if thought_ns
                 else session_id_content
             )
@@ -323,38 +177,10 @@ def create_router() -> APIRouter:
                 created,
                 text_content=text_content,
             )
-            # 保存解析结果（thought_ns 已在上面计算）
-            content_blocks_ns: list[dict[str, Any]] = []
-            if thought_ns:
-                content_blocks_ns.append({"type": "text", "text": thought_ns})
-            for tc in tool_calls_list:
-                args = tc.get("arguments", {})
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args) if args else {}
-                    except json.JSONDecodeError:
-                        args = {}
-                content_blocks_ns.append(
-                    {
-                        "type": "tool_use",
-                        "id": f"toolu_{uuid_mod.uuid4().hex[:16]}",
-                        "name": tc.get("name", ""),
-                        "input": args if isinstance(args, dict) else {},
-                    }
-                )
-            _save_response_debug(
-                {
-                    "id": chat_id,
-                    "type": "message",
-                    "role": "assistant",
-                    "content": content_blocks_ns,
-                    "stop_reason": "tool_use",
-                    "model": model,
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
-                }
-            )
             return resp
 
+        # 无 tool_calls 时为纯文本或 ReAct Final Answer，Thought 用 <think> 包裹便于客户端展示思考
+        content_reply = format_react_final_answer_content(reply) if has_tools else reply
         resp = {
             "id": chat_id,
             "object": "chat.completion",
@@ -363,23 +189,11 @@ def create_router() -> APIRouter:
             "choices": [
                 {
                     "index": 0,
-                    "message": {"role": "assistant", "content": reply},
+                    "message": {"role": "assistant", "content": content_reply},
                     "finish_reason": "stop",
                 }
             ],
         }
-        # 保存解析结果（纯文本）
-        _save_response_debug(
-            {
-                "id": chat_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": reply}],
-                "stop_reason": "end_turn",
-                "model": model,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            }
-        )
         return resp
 
     return router

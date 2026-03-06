@@ -1,5 +1,5 @@
 """
-v2 配置 API：GET/PUT /api/v2/config；配置页 GET /config/v2。
+配置 API：GET/PUT /api/config；配置页 GET /config。
 """
 
 import logging
@@ -22,22 +22,22 @@ STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 def create_config_router() -> APIRouter:
     router = APIRouter()
 
-    @router.get("/api/v2/types")
+    @router.get("/api/types")
     def get_types() -> list[str]:
         """返回已注册的 type 列表，供配置页 type 下拉使用。"""
         return PluginRegistry.all_types()
 
-    @router.get("/api/v2/config")
+    @router.get("/api/config")
     def get_config(request: Request) -> list[dict[str, Any]]:
-        """获取 v2 配置（代理组 + 账号 name/type/auth）。"""
+        """获取配置（代理组 + 账号 name/type/auth）。"""
         repo: ConfigRepository | None = getattr(request.app.state, "config_repo", None)
         if repo is None:
             raise HTTPException(status_code=503, detail="服务未就绪")
         return repo.load_raw()
 
-    @router.put("/api/v2/config")
+    @router.put("/api/config")
     def put_config(request: Request, config: list[dict[str, Any]]) -> dict[str, Any]:
-        """更新 v2 配置并立即生效。"""
+        """更新配置并立即生效。"""
         repo: ConfigRepository | None = getattr(request.app.state, "config_repo", None)
         if repo is None:
             raise HTTPException(status_code=503, detail="服务未就绪")
@@ -70,7 +70,7 @@ def create_config_router() -> APIRouter:
         try:
             repo.save_raw(config)
         except Exception as e:
-            logger.exception("保存 v2 配置失败")
+            logger.exception("保存配置失败")
             raise HTTPException(status_code=400, detail=str(e)) from e
         # 立即生效：重新加载池并替换 chat_handler
         try:
@@ -94,10 +94,10 @@ def create_config_router() -> APIRouter:
             ) from e
         return {"status": "ok", "message": "配置已保存并生效"}
 
-    @router.get("/config/v2")
-    def config_page_v2() -> FileResponse:
-        """v2 配置页入口。"""
-        path = STATIC_DIR / "config_v2.html"
+    @router.get("/config")
+    def config_page() -> FileResponse:
+        """配置页入口。"""
+        path = STATIC_DIR / "config.html"
         if not path.is_file():
             raise HTTPException(status_code=404, detail="配置页未就绪")
         return FileResponse(path)

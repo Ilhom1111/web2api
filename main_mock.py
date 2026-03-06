@@ -4,17 +4,18 @@ Mock Claude API 独立入口：仅运行 mock 服务，不依赖配置/浏览器
 默认端口 8002，避免与 main(8001) 冲突。
 """
 
-from dotenv import load_dotenv
 import logging
 import os
 import sys
 import uvicorn
 
 from core.api.mock_claude import router as mock_claude_router
+from core.config.settings import apply_env_from_config
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-load_dotenv()
+# 从 config.yaml 中加载配置（如 mock.port -> MOCK_PORT）
+apply_env_from_config()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",

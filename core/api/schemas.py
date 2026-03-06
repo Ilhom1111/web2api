@@ -1,6 +1,5 @@
 """OpenAI 兼容的请求/响应模型。"""
 
-import json
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -25,19 +24,27 @@ class OpenAIMessage(BaseModel):
 
 
 class OpenAIChatRequest(BaseModel):
+    """OpenAI Chat Completions API 兼容请求体。"""
+
     model: str = Field(default="", description="模型名，可忽略")
     messages: list[OpenAIMessage] = Field(..., description="对话列表")
     stream: bool = Field(default=False, description="是否流式返回")
-    tools: list[dict] | None = Field(default=None, description="工具列表")
-    tool_choice: str | dict | None = Field(default=None, description="工具选择策略")
+    tools: list[dict] | None = Field(
+        default=None,
+        description='工具列表，每项为 {"type":"function","function":{name,description,parameters,strict?}}',
+    )
+    tool_choice: str | dict | None = Field(
+        default=None,
+        description='工具选择: "auto"|"required"|"none" 或 {"type":"function","name":"xxx"}',
+    )
+    parallel_tool_calls: bool | None = Field(
+        default=None,
+        description="是否允许单次响应中并行多个 tool_call，false 时仅 0 或 1 个",
+    )
 
 
-def _norm_content(
-    c: str | list[OpenAIContentPart] | None, *, skip_tool_result: bool = False
-) -> str:
-    """将 content 转为单段字符串。支持 text、content（Claude tool_result 用 content）。
-    skip_tool_result: 若 True，跳过 type=tool_result 的块（由 extract_user_content 单独处理）。
-    """
+def _norm_content(c: str | list[OpenAIContentPart] | None) -> str:
+    """将 content 转为单段字符串。仅支持官方格式：字符串或 type=text 的 content part（取 text 字段）。"""
     if c is None:
         return ""
     if isinstance(c, str):
@@ -57,130 +64,71 @@ REACT_STRICT_SUFFIX = (
 def extract_user_content(
     messages: list[OpenAIMessage],
     *,
-    tools_text: str = "",
-    use_react: bool = False,
+    has_tools: bool = False,
     react_prompt_prefix: str = "",
 ) -> str:
     """
-    从 messages 中提取完整对话，拼成发给 Claude 的 prompt。
+    从 messages 中提取对话，拼成发给模型的 prompt。
+    网页/会话侧已有完整历史，只取尾部：最后一条为 user 时，从后向前找到最后一个 assistant（不包含），
+    取该 assistant 之后到末尾；最后一条为 tool 时，从后向前找到最后一个 user（不包含），取该 user 之后到末尾。
     支持 user、assistant、tool 角色；assistant 的 tool_calls 与 tool 结果会拼回。
-    ReAct 模式：完整 ReAct Prompt 仅第一次对话传入；后续对话只传对话内容 + 用户问题后的严格模式后缀。
+    ReAct 模式：完整 ReAct Prompt 仅第一次对话传入（按完整 messages 判断 is_first_turn）；后续只传尾部内容。
     """
+    if not messages:
+        return ""
+
     parts: list[str] = []
 
+    # is_first_turn 基于完整 messages 判断，用于决定是否注入 ReAct 前缀
     is_first_turn = not any(m.role in ("assistant", "tool") for m in messages)
 
-    if use_react and react_prompt_prefix and is_first_turn:
+    if has_tools and react_prompt_prefix and is_first_turn:
         parts.append(react_prompt_prefix)
-    elif not use_react and tools_text:
-        parts.append(
-            "你是一个助手，可以调用以下工具完成任务。调用时请严格按格式输出：\n"
-            '<tool_call>{"name":"工具名","arguments":{参数对象}}</tool_call>\n'
-            "只在实际调用工具时使用该格式，不要在其他解释中输出。\n\n可用工具：\n"
-            + tools_text
-            + "\n"
-        )
 
-    for m in messages:
+    last = messages[-1]
+    if last.role == "user":
+        i = len(messages) - 1
+        while i >= 0 and messages[i].role != "assistant":
+            i -= 1
+        tail = messages[i + 1 :]
+    elif last.role == "tool":
+        i = len(messages) - 1
+        while i >= 0 and messages[i].role != "user":
+            i -= 1
+        tail = messages[i + 1 :]
+    else:
+        tail = messages[-2:]
+
+    for m in tail:
         if m.role == "user":
-            # Claude 格式：content 中 type=tool_result 的块作为工具结果
-            if isinstance(m.content, list):
-                for p in m.content:
-                    is_tool_result = (
-                        isinstance(p, dict) and p.get("type") == "tool_result"
-                    ) or (
-                        hasattr(p, "type") and getattr(p, "type", None) == "tool_result"
-                    )
-                    if is_tool_result:
-                        txt = (
-                            (p.get("content") or p.get("text"))
-                            if isinstance(p, dict)
-                            else (
-                                getattr(p, "content", None) or getattr(p, "text", None)
-                            )
-                        )
-                        if txt:
-                            if use_react:
-                                parts.append(
-                                    f"**Observation**: {txt}\n\n请根据以上观察结果继续。如需调用工具，输出 Thought / Action / Action Input；若任务已完成，输出 Final Answer。"
-                                )
-                            else:
-                                parts.append(f"工具结果：{txt}")
-                            continue
-                    elif (
-                        hasattr(p, "type") and getattr(p, "type", None) == "tool_result"
-                    ):
-                        txt = getattr(p, "content", None) or getattr(p, "text", None)
-                        if txt:
-                            if use_react:
-                                parts.append(
-                                    f"**Observation**: {txt}\n\n请根据以上观察结果继续。如需调用工具，输出 Thought / Action / Action Input；若任务已完成，输出 Final Answer。"
-                                )
-                            else:
-                                parts.append(f"工具结果：{txt}")
-                            continue
             txt = _norm_content(m.content)
             if txt:
-                if use_react:
+                if has_tools:
                     parts.append(f"**User**: {txt} {REACT_STRICT_SUFFIX}")
                 else:
-                    parts.append(f"用户：{txt}")
+                    parts.append(f"User：{txt}")
         elif m.role == "assistant":
             tool_calls_list = list(m.tool_calls or [])
-            # 兼容 Claude 格式：content 数组中 type=tool_use 的块
-            if isinstance(m.content, list):
-                for p in m.content:
-                    if isinstance(p, dict) and p.get("type") == "tool_use":
-                        name = p.get("name", "")
-                        inp = p.get("input")
-                        args = (
-                            json.dumps(inp, ensure_ascii=False)
-                            if isinstance(inp, dict)
-                            else str(inp or "{}")
-                        )
-                        tool_calls_list.append(
-                            {"function": {"name": name, "arguments": args}}
-                        )
-                    elif hasattr(p, "type") and getattr(p, "type", None) == "tool_use":
-                        name = getattr(p, "name", "") or ""
-                        inp = getattr(p, "input", None)
-                        args = (
-                            json.dumps(inp, ensure_ascii=False)
-                            if isinstance(inp, dict)
-                            else str(inp or "{}")
-                        )
-                        tool_calls_list.append(
-                            {"function": {"name": name, "arguments": args}}
-                        )
             if tool_calls_list:
                 for tc in tool_calls_list:
                     fn = tc.get("function") or {}
+                    call_id = tc.get("id", "")
                     name = fn.get("name", "")
                     args = fn.get("arguments", "{}")
-                    if use_react:
-                        parts.append(
-                            f"**Assistant**:\n\n```\nAction: {name}\nAction Input: {args}\n```"
-                        )
-                    else:
-                        parts.append(f"助手调用工具：{name}({args})")
+                    parts.append(
+                        f"**Assistant**:\n\n```\nAction: {name}\nAction Input: {args}\nCall ID: {call_id}\n```"
+                    )
             else:
                 txt = _norm_content(m.content)
                 if txt:
-                    if use_react:
+                    if has_tools:
                         parts.append(f"**Assistant**:\n\n{txt}")
                     else:
-                        parts.append(f"助手：{txt}")
+                        parts.append(f"Assistant：{txt}")
         elif m.role == "tool":
             txt = _norm_content(m.content)
-            if use_react:
-                parts.append(
-                    f"**Observation**: {txt}\n\n请根据以上观察结果继续。如需调用工具，输出 Thought / Action / Action Input；若任务已完成，输出 Final Answer。"
-                )
-            else:
-                parts.append(f"工具结果：{txt}")
-
-    if use_react:
-        parts.append("请你100%严格执行")
-    else:
-        parts.append("请继续完成任务。")
+            call_id = m.tool_call_id or ""
+            parts.append(
+                f"**Observation(Call ID: {call_id})**: {txt}\n\n请根据以上观察结果继续。如需调用工具，输出 Thought / Action / Action Input；若任务已完成，输出 Final Answer。"
+            )
     return "\n".join(parts)

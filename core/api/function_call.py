@@ -1,6 +1,6 @@
 """
-Function Call 层：解析 Claude 输出的 <tool_call> 格式，转换为 OpenAI tool_calls；
-将 tools 和 tool 结果拼入 prompt 给 Claude。
+Function Call 层：解析模型输出的 <tool_call> 格式，转换为 OpenAI tool_calls；
+将 tools 和 tool 结果拼入 prompt。对外统一使用 OpenAI 格式。
 """
 
 import json
@@ -50,9 +50,9 @@ def detect_tool_call_mode(buffer: str, *, strip_session_id: bool = True) -> bool
     """
     content = buffer
     if strip_session_id:
-        from core.api.conv_parser import strip_session_id_prefix
+        from core.api.conv_parser import strip_session_id_suffix
 
-        content = strip_session_id_prefix(buffer)
+        content = strip_session_id_suffix(buffer)
     stripped = content.lstrip()
     if stripped.startswith(TOOL_CALL_PREFIX):
         return True
@@ -106,30 +106,34 @@ def build_tool_calls_response(
     *,
     text_content: str = "",
 ) -> dict[str, Any]:
-    """将解析出的 tool_calls 转为 Claude 格式的 chat.completion 响应。
-    仅使用 content 数组（text + tool_use 块），无 tool_calls。
+    """返回 OpenAI 格式的 chat.completion（含 tool_calls）。
+    message.content 为字符串（或空时 null），tool_calls 为 OpenAI 标准数组。
     """
-    content_blocks: list[dict[str, Any]] = []
-    if text_content:
-        content_blocks.append({"type": "text", "text": text_content})
+    tool_calls: list[dict[str, Any]] = []
     for tc in tool_calls_list:
         name = tc.get("name", "")
         args = tc.get("arguments", {})
         if isinstance(args, dict):
-            args_obj = args
+            args_str = json.dumps(args, ensure_ascii=False)
         else:
             try:
                 args_obj = json.loads(str(args)) if args else {}
+                args_str = json.dumps(args_obj, ensure_ascii=False)
             except json.JSONDecodeError:
-                args_obj = {}
-        content_blocks.append(
+                args_str = "{}"
+        call_id = f"call_{uuid.uuid4().hex[:24]}"
+        tool_calls.append(
             {
-                "type": "tool_use",
-                "id": f"toolu_{uuid.uuid4().hex[:16]}",
-                "name": name,
-                "input": args_obj,
+                "id": call_id,
+                "type": "function",
+                "function": {"name": name, "arguments": args_str},
             }
         )
+    message: dict[str, Any] = {
+        "role": "assistant",
+        "content": text_content if text_content else None,
+        "tool_calls": tool_calls,
+    }
     return {
         "id": chat_id,
         "object": "chat.completion",
@@ -138,170 +142,210 @@ def build_tool_calls_response(
         "choices": [
             {
                 "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": content_blocks,
-                },
-                "finish_reason": "tool_use",
+                "message": message,
+                "finish_reason": "tool_calls",
             }
         ],
     }
 
 
-def _sse_event(event_type: str, data: dict[str, Any]) -> str:
-    """构建 Claude 原生 SSE 事件：event: <type>\\ndata: <json>\\n\\n"""
-    return f"event: {event_type}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
-
-
-def build_claude_tool_use_sse_events(
-    tool_calls_list: list[dict[str, Any]],
-    message_id: str,
+def _openai_sse_chunk(
+    chat_id: str,
     model: str,
-    *,
-    text_content: str = "",
-) -> list[str]:
-    """构建 Claude 原生流式 SSE 事件（message_start, content_block_start/stop, message_delta, message_stop）。
-    用于 tool_use 场景，Cursor 按 Claude 协议解析，id/name/input 完整保留。
-    """
-    events: list[str] = []
-    events.append(
-        _sse_event(
-            "message_start",
-            {
-                "type": "message_start",
-                "message": {
-                    "id": message_id,
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [],
-                    "model": model,
-                    "stop_reason": None,
-                    "stop_sequence": None,
-                    "usage": {"input_tokens": 0, "output_tokens": 0},
-                },
-            },
-        )
-    )
-    block_index = 0
-    if text_content:
-        events.append(
-            _sse_event(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": block_index,
-                    "content_block": {"type": "text", "text": text_content},
-                },
-            )
-        )
-        events.append(
-            _sse_event(
-                "content_block_stop",
-                {"type": "content_block_stop", "index": block_index},
-            )
-        )
-        block_index += 1
-    for tc in tool_calls_list:
-        name = tc.get("name", "")
-        args = tc.get("arguments", {})
-        if isinstance(args, dict):
-            args_obj = args
-        else:
-            try:
-                args_obj = json.loads(str(args)) if args else {}
-            except json.JSONDecodeError:
-                args_obj = {}
-        tool_use_block = {
-            "type": "tool_use",
-            "id": f"toolu_{uuid.uuid4().hex[:16]}",
-            "name": name,
-            "input": args_obj,
-        }
-        events.append(
-            _sse_event(
-                "content_block_start",
-                {
-                    "type": "content_block_start",
-                    "index": block_index,
-                    "content_block": tool_use_block,
-                },
-            )
-        )
-        events.append(
-            _sse_event(
-                "content_block_stop",
-                {"type": "content_block_stop", "index": block_index},
-            )
-        )
-        block_index += 1
-    events.append(
-        _sse_event(
-            "message_delta",
-            {
-                "type": "message_delta",
-                "delta": {"stop_reason": "tool_use", "stop_sequence": None},
-                "usage": {"output_tokens": 0},
-            },
-        )
-    )
-    events.append(_sse_event("message_stop", {"type": "message_stop"}))
-    return events
+    created: int,
+    delta: dict,
+    finish_reason: str | None = None,
+) -> str:
+    """构建 OpenAI 流式 SSE：data: <json>\\n\\n"""
+    choice: dict[str, Any] = {"index": 0, "delta": delta}
+    if finish_reason is not None:
+        choice["finish_reason"] = finish_reason
+    data = {
+        "id": chat_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [choice],
+    }
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def build_claude_text_sse_events(
-    message_id: str,
+def build_openai_text_sse_events(
+    chat_id: str,
     model: str,
-) -> tuple[str, str, Callable[[str], str], Callable[[], str]]:
-    """返回 Claude 流式事件的工厂。
-    返回 (message_start_sse, content_block_start_sse, make_delta_sse, make_stop_sse)。
+    created: int,
+) -> tuple[str, Callable[[str], str], Callable[[], str]]:
+    """返回 OpenAI 流式事件的工厂。
+    返回 (msg_start_sse, make_delta_sse, make_stop_sse)。
+    msg_start 为带 role 的首 chunk。
     """
-    msg_start = _sse_event(
-        "message_start",
-        {
-            "type": "message_start",
-            "message": {
-                "id": message_id,
-                "type": "message",
-                "role": "assistant",
-                "content": [],
-                "model": model,
-                "stop_reason": None,
-                "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
-            },
-        },
-    )
-    block_start = _sse_event(
-        "content_block_start",
-        {
-            "type": "content_block_start",
-            "index": 0,
-            "content_block": {"type": "text", "text": ""},
-        },
-    )
+
+    def msg_start() -> str:
+        return _openai_sse_chunk(
+            chat_id,
+            model,
+            created,
+            delta={"role": "assistant", "content": ""},
+            finish_reason=None,
+        )
 
     def make_delta_sse(text: str) -> str:
-        return _sse_event(
-            "content_block_delta",
-            {
-                "type": "content_block_delta",
-                "index": 0,
-                "delta": {"type": "text_delta", "text": text},
+        return _openai_sse_chunk(
+            chat_id,
+            model,
+            created,
+            delta={
+                "content": text,
             },
+            finish_reason=None,
         )
 
     def make_stop_sse() -> str:
         return (
-            _sse_event("content_block_stop", {"type": "content_block_stop", "index": 0})
-            + _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn", "stop_sequence": None},
-                    "usage": {"output_tokens": 0},
-                },
+            _openai_sse_chunk(
+                chat_id,
+                model,
+                created,
+                delta={},
+                finish_reason="stop",
             )
-            + _sse_event("message_stop", {"type": "message_stop"})
+            + "data: [DONE]\n\n"
         )
 
-    return msg_start, block_start, make_delta_sse, make_stop_sse
+    return msg_start(), make_delta_sse, make_stop_sse
+
+
+def build_tool_calls_with_ids(
+    tool_calls_list: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """从 name+arguments 的 tool_calls_list 构建带 id 的 OpenAI 格式 tool_calls。
+    用于流式下发与 debug 保存共用同一批 id，保证下一轮 request 的 tool_call_id 一致。
+    """
+    tool_calls: list[dict[str, Any]] = []
+    for i, tc in enumerate(tool_calls_list):
+        name = tc.get("name", "")
+        args = tc.get("arguments", {})
+        if isinstance(args, dict):
+            args_str = json.dumps(args, ensure_ascii=False)
+        else:
+            try:
+                args_obj = json.loads(str(args)) if args else {}
+                args_str = json.dumps(args_obj, ensure_ascii=False)
+            except json.JSONDecodeError:
+                args_str = "{}"
+        tool_calls.append(
+            {
+                "index": i,
+                "id": f"call_{uuid.uuid4().hex[:24]}",
+                "type": "function",
+                "function": {"name": name, "arguments": args_str},
+            }
+        )
+    return tool_calls
+
+
+def build_openai_tool_use_sse_events(
+    tool_calls_list: list[dict[str, Any]],
+    chat_id: str,
+    model: str,
+    created: int,
+    *,
+    text_content: str = "",
+    tool_calls_with_ids: list[dict[str, Any]] | None = None,
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """构建 OpenAI 流式 SSE 事件，用于 tool_calls 场景。
+    有 text_content（如 thinking）时：先发 content chunk，再发 tool_calls chunk，便于客户端先展示思考再展示工具调用。
+    无 text_content 时：单 chunk 发 role + tool_calls。
+    tool_calls 场景最后只发 finish_reason，不发 data: [DONE]（think 之后不跟 [DONE]）。
+    """
+    if tool_calls_with_ids is not None:
+        tool_calls = tool_calls_with_ids
+    else:
+        tool_calls = build_tool_calls_with_ids(tool_calls_list)
+    sse_list: list[str] = []
+    if text_content:
+        # 先发 content（thinking），再发 tool_calls，同一条消息内顺序展示
+        sse_list.append(
+            _openai_sse_chunk(
+                chat_id,
+                model,
+                created,
+                {"role": "assistant", "content": text_content},
+                None,
+            )
+        )
+        sse_list.append(
+            _openai_sse_chunk(chat_id, model, created, {"tool_calls": tool_calls}, None)
+        )
+    else:
+        sse_list.append(
+            _openai_sse_chunk(
+                chat_id,
+                model,
+                created,
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": tool_calls,
+                },
+                None,
+            )
+        )
+    sse_list.append(_openai_sse_chunk(chat_id, model, created, {}, "tool_calls"))
+    return (sse_list, tool_calls)
+
+
+def stream_openai_tool_use_sse_events(
+    tool_calls_list: list[dict[str, Any]],
+    chat_id: str,
+    model: str,
+    created: int,
+    *,
+    tool_calls_with_ids: list[dict[str, Any]] | None = None,
+) -> list[str]:
+    """
+    流式下发 tool_calls：先发每个 tool 的 id/name（arguments 为空），
+    再逐个发 arguments 分片，最后发 finish_reason。便于客户端逐步展示。
+    content（如 <think>）由调用方已通过 delta 流式发完，此处只发 tool_calls 相关 chunk。
+    """
+    if tool_calls_with_ids is not None:
+        tool_calls = tool_calls_with_ids
+    else:
+        tool_calls = build_tool_calls_with_ids(tool_calls_list)
+    sse_list: list[str] = []
+    # 第一块：仅 id + type + name，arguments 为空，让客户端先展示“正在调用 xxx”
+    tool_calls_heads: list[dict[str, Any]] = []
+    for tc in tool_calls:
+        tool_calls_heads.append(
+            {
+                "index": tc["index"],
+                "id": tc["id"],
+                "type": "function",
+                "function": {"name": tc["function"]["name"], "arguments": ""},
+            }
+        )
+    sse_list.append(
+        _openai_sse_chunk(
+            chat_id, model, created, {"tool_calls": tool_calls_heads}, None
+        )
+    )
+    # 后续每块：只带 index + function.arguments，可整段发或分片发，这里按 tool 逐个发
+    for tc in tool_calls:
+        args = tc.get("function", {}).get("arguments", "") or ""
+        if not args:
+            continue
+        sse_list.append(
+            _openai_sse_chunk(
+                chat_id,
+                model,
+                created,
+                {
+                    "tool_calls": [
+                        {"index": tc["index"], "function": {"arguments": args}}
+                    ]
+                },
+                None,
+            )
+        )
+    sse_list.append(_openai_sse_chunk(chat_id, model, created, {}, "tool_calls"))
+    return sse_list

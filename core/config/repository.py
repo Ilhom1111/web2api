@@ -1,6 +1,6 @@
 """
-v2 配置持久化：独立 SQLite 文件，不修改现有 config_db。
-表结构：proxy_group_v2, account_v2（含 name, type, auth JSON）。
+配置持久化：独立 SQLite 文件，不修改现有 config_db。
+表结构：proxy_group, account（含 name, type, auth JSON）。
 """
 
 import sqlite3
@@ -10,11 +10,11 @@ from typing import Any
 from core.config.schema import AccountConfig, ProxyGroupConfig, account_from_row
 
 
-DB_FILENAME = "account_pool_v2.sqlite3"
+DB_FILENAME = "db.sqlite3"
 
 
 def _get_db_path() -> Path:
-    """v2 专用 DB，与现有 account_pool.sqlite3 分离。"""
+    """专用 DB，与现有 account_pool.sqlite3 分离。"""
     return Path(__file__).resolve().parent.parent.parent / DB_FILENAME
 
 
@@ -27,7 +27,7 @@ def _get_conn() -> sqlite3.Connection:
 def _init_tables(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS proxy_group_v2 (
+        CREATE TABLE IF NOT EXISTS proxy_group (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             proxy_host TEXT NOT NULL,
             proxy_user TEXT NOT NULL,
@@ -39,30 +39,30 @@ def _init_tables(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS account_v2 (
+        CREATE TABLE IF NOT EXISTS account (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             proxy_group_id INTEGER NOT NULL,
             name TEXT NOT NULL,
             type TEXT NOT NULL,
             auth TEXT NOT NULL DEFAULT '{}',
-            FOREIGN KEY (proxy_group_id) REFERENCES proxy_group_v2(id) ON DELETE CASCADE
+            FOREIGN KEY (proxy_group_id) REFERENCES proxy_group(id) ON DELETE CASCADE
         )
         """
     )
     conn.execute(
-        "CREATE INDEX IF NOT EXISTS ix_account_v2_proxy_group_id ON account_v2(proxy_group_id)"
+        "CREATE INDEX IF NOT EXISTS ix_account_proxy_group_id ON account(proxy_group_id)"
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS ix_account_v2_type ON account_v2(type)")
+    conn.execute("CREATE INDEX IF NOT EXISTS ix_account_type ON account(type)")
     # 解冻时间戳：接口返回后写入，判断可用性时与当前时间比较
     try:
-        conn.execute("ALTER TABLE account_v2 ADD COLUMN unfreeze_at INTEGER")
+        conn.execute("ALTER TABLE account ADD COLUMN unfreeze_at INTEGER")
     except sqlite3.OperationalError:
         pass  # 列已存在（如升级后再次初始化）
     conn.commit()
 
 
 class ConfigRepository:
-    """v2 配置的读写，面向对象封装。"""
+    """配置的读写，面向对象封装。"""
 
     def __init__(self, db_path: Path | None = None) -> None:
         self._db_path = db_path or _get_db_path()
@@ -88,13 +88,13 @@ class ConfigRepository:
             for row in conn.execute(
                 """
                 SELECT id, proxy_host, proxy_user, proxy_pass, fingerprint_id, timezone
-                FROM proxy_group_v2 ORDER BY id
+                FROM proxy_group ORDER BY id ASC
                 """
             ).fetchall():
                 gid, proxy_host, proxy_user, proxy_pass, fingerprint_id, timezone = row
                 accounts: list[AccountConfig] = []
                 for acc_row in conn.execute(
-                    "SELECT name, type, auth, unfreeze_at FROM account_v2 WHERE proxy_group_id = ? ORDER BY id",
+                    "SELECT name, type, auth, unfreeze_at FROM account WHERE proxy_group_id = ? ORDER BY id ASC",
                     (gid,),
                 ).fetchall():
                     name, type_, auth_json = acc_row[0], acc_row[1], acc_row[2]
@@ -127,12 +127,12 @@ class ConfigRepository:
         conn = self._conn()
         try:
             _init_tables(conn)
-            conn.execute("DELETE FROM account_v2")
-            conn.execute("DELETE FROM proxy_group_v2")
+            conn.execute("DELETE FROM account")
+            conn.execute("DELETE FROM proxy_group")
             for g in groups:
                 cur = conn.execute(
                     """
-                    INSERT INTO proxy_group_v2 (proxy_host, proxy_user, proxy_pass, fingerprint_id, timezone)
+                    INSERT INTO proxy_group (proxy_host, proxy_user, proxy_pass, fingerprint_id, timezone)
                     VALUES (?, ?, ?, ?, ?)
                     """,
                     (
@@ -147,7 +147,7 @@ class ConfigRepository:
                 for a in g.accounts:
                     conn.execute(
                         """
-                        INSERT INTO account_v2 (proxy_group_id, name, type, auth, unfreeze_at)
+                        INSERT INTO account (proxy_group_id, name, type, auth, unfreeze_at)
                         VALUES (?, ?, ?, ?, ?)
                         """,
                         (gid, a.name, a.type, a.auth_json(), a.unfreeze_at),
@@ -196,8 +196,8 @@ class ConfigRepository:
             _init_tables(conn)
             conn.execute(
                 """
-                UPDATE account_v2 SET unfreeze_at = ?
-                WHERE proxy_group_id = (SELECT id FROM proxy_group_v2 WHERE fingerprint_id = ?)
+                UPDATE account SET unfreeze_at = ?
+                WHERE proxy_group_id = (SELECT id FROM proxy_group WHERE fingerprint_id = ?)
                   AND name = ?
                 """,
                 (unfreeze_at, fingerprint_id, account_name),

@@ -1,0 +1,14 @@
+claude:
+  # Claude Web2API 入口地址，用于浏览器打开站点（可指向 mock 服务）
+  # 生产环境使用默认值；调试时可指向 mock 服务，例如：
+  #   start_url: "http://127.0.0.1:8002/mock"
+  start_url: ''
+
+  # Claude API 基础地址，用于调用 /api/... 接口（可指向 mock 服务）
+  # 生产环境使用默认值；调试时可指向 mock 服务，例如：
+  #   api_base: "http://127.0.0.1:8002/mock"
+  api_base: ''
+
+mock:
+  # Mock Claude API 服务监听端口，对应环境变量 MOCK_PORT
+  port: 8002
