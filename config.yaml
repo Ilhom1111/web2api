@@ -7,6 +7,12 @@ browser:
   # Linux 示例：/usr/bin/chromium 或 /opt/fingerprint-chromium/chrome
   chromium_bin: '/Applications/Chromium.app/Contents/MacOS/Chromium'
 
+  # 是否启用无头模式（headless）
+  # 默认 false。优先推荐 Linux + Xvfb，这样仍然是“有界面浏览器”，兼容性更稳。
+  # headless 只建议用于检测不严格、页面行为简单的平台。
+  # 对 Claude 这类检测更严格的平台，不推荐优先开启；可能出现扩展失效、登录态异常或更高风控风险。
+  headless: false
+
   # CDP 端口池：每个浏览器进程占用一个端口
   # cdp_port_start: 起始端口（默认 9223）
   # cdp_port_count: 端口数量，即最多可并发的浏览器数（默认 20）

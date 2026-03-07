@@ -72,6 +72,35 @@ POST /claude/v1/chat/completions
 uv sync
 ```
 
+### Linux 用户：推荐用虚拟屏幕启动
+
+如果你是在 `Linux` 服务器或 `Docker` 容器里常驻运行，建议配合 `Xvfb`，这样浏览器不会占用桌面，同时仍然是“有界面浏览器”。
+
+先安装：
+
+```bash
+sudo apt update
+sudo apt install -y xvfb
+```
+
+启动时这样跑：
+
+```bash
+xvfb-run -a -s "-screen 0 1920x1080x24" ./start.sh
+```
+
+这样做比直接改成 `headless` 更稳，原因是：
+
+- 站点兼容性通常更好
+- 扩展和登录态行为更接近真实浏览器
+- 更不容易因为无头模式差异触发风控
+
+如果你是放在 `Docker` 里运行，也建议沿用这个思路：
+
+- 容器内跑 `Chromium + Xvfb`
+- 持久化 `config.yaml`、`db.sqlite3`、浏览器数据目录
+- 给 Chromium 足够的共享内存，例如更大的 `/dev/shm`
+
 ### 3. 检查 `config.yaml`
 
 项目根目录有一个 [config.yaml](/Users/caiwu/code/CDPDemo/config.yaml)，它主要控制：
@@ -98,7 +127,7 @@ server:
 ### 4. 启动服务
 
 ```bash
-uv run python main.py
+./start.sh
 ```
 
 如果启动成功，你会看到类似日志：
@@ -127,6 +156,11 @@ http://127.0.0.1:9000/config
 - 账号 `auth.sessionKey`
 
 保存后立即生效。
+
+配置时建议注意一件事：
+
+- 不要在同一个 `代理组` 下面堆很多同类型账号  
+  例如同一个 IP 下面挂大量 `claude` 账号。这样虽然看起来方便调度，但更容易让站点把这些账号关联到同一出口 IP，增加风控和封号风险。
 
 ### 6. 发第一条请求
 
@@ -234,6 +268,34 @@ curl -s "http://127.0.0.1:9000/claude/v1/chat/completions" \
 
 所以这不是最轻的方案，而是更适合“长期跑、尽量少因为站点变动而失效”的方案。
 
+### 浏览器弹窗很烦，怎么处理？
+
+如果你是在本机直接运行，这个项目会启动真实浏览器，所以看到窗口弹出是正常的。
+
+针对 `Linux` 用户，推荐直接看上面的“快速开始 -> Linux 用户：推荐用虚拟屏幕启动”。
+
+如果你是在 `macOS` 本机上运行，更现实的做法通常不是强行隐藏本机窗口，而是把项目放到 `Docker` 或远程 `Linux` 环境里运行。
+
+如果你接入的是**检测不严格**的平台，也可以考虑增加或开启 `headless` 模式，来减少窗口干扰和图形环境依赖。
+
+对应配置在 [config.yaml](/Users/caiwu/code/CDPDemo/config.yaml)：
+
+```yaml
+browser:
+  headless: true
+```
+
+但要注意：
+
+- `headless` 更适合风控弱、页面行为简单的平台
+- 对依赖真实浏览器环境的平台，兼容性通常不如“有界面浏览器 + 虚拟屏幕”
+- 对 `claude` 这类检测更严格的平台，不推荐优先走 `headless`
+
+所以默认建议仍然是：
+
+- `claude`：优先真实浏览器，`Linux` 下配合 `Xvfb`
+- 其它检测不严格的平台：可以再评估是否使用 `headless`
+
 ## API 示例
 
 ### 列出模型
@@ -333,6 +395,12 @@ uv run ruff check .
 - `sessionKey`
 - 抓包数据
 - 任何真实用户对话
+
+另外也不建议这样使用：
+
+- 在同一个代理组下集中堆很多同类型账号
+
+更稳妥的做法是把同类型账号分散到不同 IP / 不同代理组，降低账号关联和风控风险。
 
 ## 最后一句话
 

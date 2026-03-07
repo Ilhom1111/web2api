@@ -104,9 +104,11 @@ class BrowserManager:
     def __init__(
         self,
         chromium_bin: str = CHROMIUM_BIN,
+        headless: bool = False,
         port_range: list[int] | None = None,
     ) -> None:
         self._chromium_bin = chromium_bin
+        self._headless = headless
         self._port_range = port_range or list(CDP_PORT_RANGE)
         self._entries: dict[ProxyKey, BrowserEntry] = {}
         self._available_ports: set[int] = set(self._port_range)
@@ -180,6 +182,14 @@ class BrowserManager:
             "--no-first-run",
             "--no-default-browser-check",
         ]
+        if self._headless:
+            args.extend(
+                [
+                    "--headless=new",
+                    "--disable-gpu",
+                    "--window-size=1920,1080",
+                ]
+            )
         env = os.environ.copy()
         env["NODE_OPTIONS"] = (
             env.get("NODE_OPTIONS") or ""
@@ -214,7 +224,12 @@ class BrowserManager:
             )
         port = self._available_ports.pop()
         proc = self._launch_process(proxy_key, proxy_pass, port)
-        logger.info("已启动 Chromium PID=%s port=%s，等待 CDP 就绪...", proc.pid, port)
+        logger.info(
+            "已启动 Chromium PID=%s port=%s headless=%s，等待 CDP 就绪...",
+            proc.pid,
+            port,
+            self._headless,
+        )
         ok = await _wait_for_cdp("127.0.0.1", port)
         if not ok:
             self._available_ports.add(port)

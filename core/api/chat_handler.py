@@ -681,6 +681,9 @@ class ChatHandler:
                     session_id = await plugin.create_conversation(
                         target.context,
                         target.page,
+                        timezone=target.group.timezone
+                        or getattr(target.proxy_key, "timezone", None)
+                        or TIMEZONE,
                     )
                     if not session_id:
                         raise RuntimeError("插件创建会话失败")

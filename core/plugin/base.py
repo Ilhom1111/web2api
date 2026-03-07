@@ -84,6 +84,7 @@ class AbstractPlugin(ABC):
         self,
         context: BrowserContext,
         page: Page,
+        **kwargs: Any,
     ) -> str | None:
         raise NotImplementedError
 
@@ -191,6 +192,7 @@ class BaseSitePlugin(AbstractPlugin):
         self,
         context: BrowserContext,
         page: Page,
+        **kwargs: Any,
     ) -> str | None:
         workspace = await self.fetch_workspace(context)
         if workspace is None:
@@ -202,6 +204,8 @@ class BaseSitePlugin(AbstractPlugin):
         if conv_id is None:
             return None
         state: dict[str, Any] = {"workspace": workspace}
+        if kwargs.get("timezone") is not None:
+            state["timezone"] = kwargs["timezone"]
         self.init_session_state(state, workspace)
         self._session_state[conv_id] = state
         logger.info(

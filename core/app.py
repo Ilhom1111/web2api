@@ -15,7 +15,7 @@ from core.api.chat_handler import ChatHandler
 from core.api.config_routes import create_config_router
 from core.api.routes import create_router
 from core.config.repository import ConfigRepository
-from core.config.settings import get
+from core.config.settings import get, get_bool
 from core.constants import CDP_PORT_RANGE, CHROMIUM_BIN
 from core.plugin.base import PluginRegistry
 from core.plugin.claude import register_claude_plugin
@@ -36,6 +36,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     groups = repo.load_groups()
 
     chromium_bin = (get("browser", "chromium_bin") or "").strip() or CHROMIUM_BIN
+    headless = get_bool("browser", "headless", False)
     port_start = int(get("browser", "cdp_port_start") or 9223)
     port_count = int(get("browser", "cdp_port_count") or 20)
     port_range = (
@@ -47,6 +48,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     session_cache = SessionCache()
     browser_manager = BrowserManager(
         chromium_bin=chromium_bin,
+        headless=headless,
         port_range=port_range,
     )
     app.state.chat_handler = ChatHandler(

@@ -12,6 +12,7 @@ from typing import Any
 
 from playwright.async_api import BrowserContext
 
+from core.constants import TIMEZONE
 from core.plugin.base import BaseSitePlugin, PluginRegistry, SiteConfig
 
 logger = logging.getLogger(__name__)
@@ -23,12 +24,12 @@ logger = logging.getLogger(__name__)
 
 
 def _default_completion_body(
-    message: str, *, is_follow_up: bool = False
+    message: str, *, is_follow_up: bool = False, timezone: str = TIMEZONE
 ) -> dict[str, Any]:
     """构建 Claude completion 请求体。续写时不带 create_conversation_params，否则 API 返回 400。"""
     body: dict[str, Any] = {
         "prompt": message,
-        "timezone": "America/Chicago",
+        "timezone": timezone,
         "personalized_styles": [
             {
                 "type": "default",
@@ -206,7 +207,10 @@ class ClaudePlugin(BaseSitePlugin):
         state: dict[str, Any],
     ) -> dict[str, Any]:
         parent = state.get("parent_message_uuid")
-        body = _default_completion_body(message, is_follow_up=parent is not None)
+        tz = state.get("timezone") or TIMEZONE
+        body = _default_completion_body(
+            message, is_follow_up=parent is not None, timezone=tz
+        )
         if parent:
             body["parent_message_uuid"] = parent
         return body
@@ -219,8 +223,6 @@ class ClaudePlugin(BaseSitePlugin):
 
     def is_terminal_sse_event(self, payload: str) -> bool:
         return _is_terminal_sse_event(payload)
-
-    # ---- 可选 hook 覆盖 ----
 
     def on_http_error(
         self,

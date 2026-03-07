@@ -43,3 +43,19 @@ def get(section: str, key: str, default: Any = None) -> Any:
         return default
     val = cfg.get(key)
     return val if val is not None else default
+
+
+def get_bool(section: str, key: str, default: bool = False) -> bool:
+    """从 config 读取布尔值，兼容 true/false、1/0、yes/no、on/off。"""
+    val = get(section, key, default)
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        normalized = val.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return bool(default)
