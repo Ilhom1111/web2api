@@ -15,6 +15,7 @@ from core.api.conv_parser import (
 )
 from core.api.react import format_react_final_answer_content, parse_react_output
 from core.api.react_stream_parser import ReactStreamParser
+from core.hub.schemas import OpenAIStreamEvent
 from core.protocol.base import ProtocolAdapter
 from core.protocol.schemas import (
     CanonicalChatRequest,
@@ -83,9 +84,13 @@ class AnthropicProtocolAdapter(ProtocolAdapter):
     def render_non_stream(
         self,
         req: CanonicalChatRequest,
-        raw_chunks: list[str],
+        raw_events: list[OpenAIStreamEvent],
     ) -> dict[str, Any]:
-        full = "".join(raw_chunks)
+        full = "".join(
+            ev.content or ""
+            for ev in raw_events
+            if ev.type == "content_delta" and ev.content
+        )
         session_marker = extract_session_id_marker(full)
         text = strip_session_id_suffix(full)
         message_id = self._message_id(req)
@@ -123,7 +128,7 @@ class AnthropicProtocolAdapter(ProtocolAdapter):
     async def render_stream(
         self,
         req: CanonicalChatRequest,
-        raw_stream: AsyncIterator[str],
+        raw_stream: AsyncIterator[OpenAIStreamEvent],
     ) -> AsyncIterator[str]:
         message_id = self._message_id(req)
         parser = ReactStreamParser(
@@ -134,13 +139,19 @@ class AnthropicProtocolAdapter(ProtocolAdapter):
         )
         session_marker = ""
         translator = _AnthropicStreamTranslator(req, message_id)
-        async for chunk in raw_stream:
-            if extract_session_id_marker(chunk) and not strip_session_id_suffix(chunk):
-                session_marker = chunk
-                continue
-            for sse in parser.feed(chunk):
-                for out in translator.feed_openai_sse(sse):
-                    yield out
+        async for event in raw_stream:
+            if event.type == "content_delta" and event.content:
+                chunk = event.content
+                if extract_session_id_marker(chunk) and not strip_session_id_suffix(
+                    chunk
+                ):
+                    session_marker = chunk
+                    continue
+                for sse in parser.feed(chunk):
+                    for out in translator.feed_openai_sse(sse):
+                        yield out
+            elif event.type == "finish":
+                break
         for sse in parser.finish():
             for out in translator.feed_openai_sse(sse, session_marker=session_marker):
                 yield out

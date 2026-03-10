@@ -1,4 +1,4 @@
-"""协议适配器抽象。"""
+"""协议适配器抽象。内部统一以 OpenAI 语义事件流为中间态。"""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
 
+from core.hub.schemas import OpenAIStreamEvent
 from core.protocol.schemas import CanonicalChatRequest
 
 
@@ -23,14 +24,14 @@ class ProtocolAdapter(ABC):
     def render_non_stream(
         self,
         req: CanonicalChatRequest,
-        raw_chunks: list[str],
+        raw_events: list[OpenAIStreamEvent],
     ) -> dict[str, Any]: ...
 
     @abstractmethod
     def render_stream(
         self,
         req: CanonicalChatRequest,
-        raw_stream: AsyncIterator[str],
+        raw_stream: AsyncIterator[OpenAIStreamEvent],
     ) -> AsyncIterator[str]: ...
 
     @abstractmethod

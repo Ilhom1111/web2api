@@ -51,7 +51,18 @@ class OpenAIChatRequest(BaseModel):
         description="是否允许单次响应中并行多个 tool_call，false 时仅 0 或 1 个",
     )
     resume_session_id: str | None = Field(default=None, exclude=True)
-    attachment_files: list[InputAttachment] = Field(default_factory=list, exclude=True)
+    attachment_files: list[InputAttachment] = Field(
+        default_factory=list,
+        exclude=True,
+        description="本次实际要发送给站点的附件，由 ChatHandler 根据 full_history 选择来源填充。",
+    )
+    # 仅供内部调度使用：最后一条 user 消息里的附件 & 所有 user 消息里的附件
+    attachment_files_last_user: list[InputAttachment] = Field(
+        default_factory=list, exclude=True
+    )
+    attachment_files_all_users: list[InputAttachment] = Field(
+        default_factory=list, exclude=True
+    )
 
 
 def _norm_content(c: str | list[OpenAIContentPart] | None) -> str:

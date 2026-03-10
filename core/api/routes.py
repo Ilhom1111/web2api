@@ -109,8 +109,8 @@ def create_router() -> APIRouter:
             )
 
         try:
-            raw_chunks = await service.collect_raw(canonical_req)
-            return adapter.render_non_stream(canonical_req, raw_chunks)
+            raw_events = await service.collect_raw(canonical_req)
+            return adapter.render_non_stream(canonical_req, raw_events)
         except Exception as exc:
             status, payload = adapter.render_error(exc)
             return JSONResponse(status_code=status, content=payload)

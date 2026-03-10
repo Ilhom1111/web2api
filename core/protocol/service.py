@@ -1,4 +1,4 @@
-"""Canonical 请求桥接到当前 OpenAI 风格内部处理链。"""
+"""Canonical 请求桥接到 OpenAI 语义事件流（唯一中间态）。"""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from core.protocol.images import (
     parse_base64_image,
     parse_data_url,
 )
+from core.hub.schemas import OpenAIStreamEvent
 from core.protocol.schemas import CanonicalChatRequest, CanonicalContentBlock
 
 
@@ -24,16 +25,18 @@ class CanonicalChatService:
     def __init__(self, handler: ChatHandler) -> None:
         self._handler = handler
 
-    async def stream_raw(self, req: CanonicalChatRequest) -> AsyncIterator[str]:
+    async def stream_raw(
+        self, req: CanonicalChatRequest
+    ) -> AsyncIterator[OpenAIStreamEvent]:
         openai_req = await self._to_openai_request(req)
-        async for chunk in self._handler.stream_completion(req.provider, openai_req):
-            yield chunk
+        async for event in self._handler.stream_openai_events(req.provider, openai_req):
+            yield event
 
-    async def collect_raw(self, req: CanonicalChatRequest) -> list[str]:
-        chunks: list[str] = []
-        async for chunk in self.stream_raw(req):
-            chunks.append(chunk)
-        return chunks
+    async def collect_raw(self, req: CanonicalChatRequest) -> list[OpenAIStreamEvent]:
+        events: list[OpenAIStreamEvent] = []
+        async for event in self.stream_raw(req):
+            events.append(event)
+        return events
 
     async def _to_openai_request(self, req: CanonicalChatRequest) -> OpenAIChatRequest:
         messages: list[OpenAIMessage] = []
@@ -67,7 +70,7 @@ class CanonicalChatService:
             }
             for tool in req.tools
         ]
-        attachments = await self._resolve_attachments(req)
+        last_user_attachments, all_attachments = await self._resolve_attachments(req)
         return OpenAIChatRequest(
             model=req.model,
             messages=messages,
@@ -75,44 +78,76 @@ class CanonicalChatService:
             tools=openai_tools or None,
             tool_choice=req.tool_choice,
             resume_session_id=req.resume_session_id,
-            attachment_files=attachments,
+            # 由 ChatHandler 根据是否 full_history 选择实际赋值给 attachment_files
+            attachment_files=[],
+            attachment_files_last_user=last_user_attachments,
+            attachment_files_all_users=all_attachments,
         )
 
     async def _resolve_attachments(
         self, req: CanonicalChatRequest
-    ) -> list[InputAttachment]:
-        image_blocks: list[CanonicalContentBlock] = []
+    ) -> tuple[list[InputAttachment], list[InputAttachment]]:
+        """
+        解析图片附件，返回 (last_user_attachments, all_user_attachments)：
+
+        - 复用会话（full_history=False）时，仅需最后一条 user 的图片；
+        - 重建会话（full_history=True）时，需要把所有历史 user 的图片一并补上。
+        """
+        last_user: CanonicalMessage | None = None
+        for msg in reversed(req.messages):
+            if msg.role == "user":
+                last_user = msg
+                break
+
+        # 所有 user 消息里的图片（用于重建会话补历史）
+        all_image_blocks: list[CanonicalContentBlock] = []
         for msg in req.messages:
             if msg.role != "user":
                 continue
-            image_blocks.extend(block for block in msg.content if block.type == "image")
-        if len(image_blocks) > MAX_IMAGE_COUNT:
+            all_image_blocks.extend(
+                block for block in msg.content if block.type == "image"
+            )
+
+        last_user_blocks: list[CanonicalContentBlock] = []
+        if last_user is not None:
+            last_user_blocks = [
+                block for block in last_user.content if block.type == "image"
+            ]
+
+        if len(all_image_blocks) > MAX_IMAGE_COUNT:
             raise ValueError(f"单次最多上传 {MAX_IMAGE_COUNT} 张图片")
 
-        attachments: list[InputAttachment] = []
-        for idx, block in enumerate(image_blocks, start=1):
-            if block.url:
-                prepared = await download_remote_image(
-                    block.url, prefix=f"message_image_{idx}"
+        async def _prepare(
+            blocks: list[CanonicalContentBlock],
+        ) -> list[InputAttachment]:
+            attachments: list[InputAttachment] = []
+            for idx, block in enumerate(blocks, start=1):
+                if block.url:
+                    prepared = await download_remote_image(
+                        block.url, prefix=f"message_image_{idx}"
+                    )
+                elif block.data and block.data.startswith("data:"):
+                    prepared = parse_data_url(block.data, prefix=f"message_image_{idx}")
+                elif block.data and block.mime_type:
+                    prepared = parse_base64_image(
+                        block.data,
+                        block.mime_type,
+                        prefix=f"message_image_{idx}",
+                    )
+                else:
+                    raise ValueError("图片块缺少可用数据")
+                attachments.append(
+                    InputAttachment(
+                        filename=prepared.filename,
+                        mime_type=prepared.mime_type,
+                        data=prepared.data,
+                    )
                 )
-            elif block.data and block.data.startswith("data:"):
-                prepared = parse_data_url(block.data, prefix=f"message_image_{idx}")
-            elif block.data and block.mime_type:
-                prepared = parse_base64_image(
-                    block.data,
-                    block.mime_type,
-                    prefix=f"message_image_{idx}",
-                )
-            else:
-                raise ValueError("图片块缺少可用数据")
-            attachments.append(
-                InputAttachment(
-                    filename=prepared.filename,
-                    mime_type=prepared.mime_type,
-                    data=prepared.data,
-                )
-            )
-        return attachments
+            return attachments
+
+        last_attachments = await _prepare(last_user_blocks)
+        all_attachments = await _prepare(all_image_blocks)
+        return last_attachments, all_attachments
 
     @staticmethod
     def _to_openai_content(

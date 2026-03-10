@@ -22,6 +22,7 @@ from core.api.react import (
 )
 from core.api.react_stream_parser import ReactStreamParser
 from core.api.schemas import OpenAIChatRequest, OpenAIContentPart, OpenAIMessage
+from core.hub.schemas import OpenAIStreamEvent
 from core.protocol.base import ProtocolAdapter
 from core.protocol.schemas import (
     CanonicalChatRequest,
@@ -67,9 +68,13 @@ class OpenAIProtocolAdapter(ProtocolAdapter):
     def render_non_stream(
         self,
         req: CanonicalChatRequest,
-        raw_chunks: list[str],
+        raw_events: list[OpenAIStreamEvent],
     ) -> dict[str, Any]:
-        reply = "".join(raw_chunks)
+        reply = "".join(
+            ev.content or ""
+            for ev in raw_events
+            if ev.type == "content_delta" and ev.content
+        )
         session_marker = extract_session_id_marker(reply)
         content_for_parse = strip_session_id_suffix(reply)
         chat_id, created = self._response_context(req)
@@ -119,7 +124,7 @@ class OpenAIProtocolAdapter(ProtocolAdapter):
     async def render_stream(
         self,
         req: CanonicalChatRequest,
-        raw_stream: AsyncIterator[str],
+        raw_stream: AsyncIterator[OpenAIStreamEvent],
     ) -> AsyncIterator[str]:
         chat_id, created = self._response_context(req)
         parser = ReactStreamParser(
@@ -129,12 +134,18 @@ class OpenAIProtocolAdapter(ProtocolAdapter):
             has_tools=bool(req.tools),
         )
         session_marker = ""
-        async for chunk in raw_stream:
-            if extract_session_id_marker(chunk) and not strip_session_id_suffix(chunk):
-                session_marker = chunk
-                continue
-            for sse in parser.feed(chunk):
-                yield sse
+        async for event in raw_stream:
+            if event.type == "content_delta" and event.content:
+                chunk = event.content
+                if extract_session_id_marker(chunk) and not strip_session_id_suffix(
+                    chunk
+                ):
+                    session_marker = chunk
+                    continue
+                for sse in parser.feed(chunk):
+                    yield sse
+            elif event.type == "finish":
+                break
         if session_marker:
             yield self._content_delta(chat_id, req.model, created, session_marker)
         for sse in parser.finish():
